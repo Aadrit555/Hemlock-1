@@ -4,7 +4,7 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
-
+// Capture $\rightarrow$ Poison $\rightarrow$ Sign
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -33,9 +33,15 @@ int main() {
         pixels[i] = (unsigned char)fmin(255.0, poisoned);
     }
 
+    // Basically It iterates through every single byte of color data (Red, Green, Blue) and adds a tiny amount of static noise.
+
     // Step D: Save the poisoned image
     stbi_write_jpg("protected.jpg", width, height, channels, pixels, 90);
     stbi_image_free(pixels);
+
+    // The name of the file to create on your hard drive.
+
+    
 
     // CRITICAL: Reload the image to get the "compressed" pixels for signing
     // This ensures the Verifier sees the exact same pixel data.
