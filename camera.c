@@ -69,6 +69,6 @@ int main() {
     // ... (rest of your signing code) ...
 
     stbi_image_free(saved_pixels);
-    printf("Aegis Protection Complete.\n");
+    printf("Hemlock Protection Complete.\n");
     return 0;
 }
