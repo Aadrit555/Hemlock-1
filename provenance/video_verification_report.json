@@ -1,0 +1,9 @@
+{
+  "file": "input.mp4",
+  "status": "FAILED",
+  "failure_type": "SIGNATURE_MISMATCH",
+  "first_mismatched_frame": 18,
+  "total_frames_checked": 18,
+  "signed_by": "ECDSA-P256",
+  "verified_with_public_key": true
+}
