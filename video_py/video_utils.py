@@ -1,7 +1,7 @@
 import hashlib
 
-def chained_hash(frame: bytes, prev_hash: bytes) -> bytes:
-    h = hashlib.sha256()
-    h.update(frame)
-    h.update(prev_hash)
-    return h.digest()
+def sha256(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+def chained_hash(curr: bytes, prev: bytes) -> bytes:
+    return sha256(prev + curr)

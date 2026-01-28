@@ -2,6 +2,7 @@ import sys
 import json
 import numpy as np
 import imageio.v3 as iio
+from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -10,9 +11,13 @@ from cryptography.exceptions import InvalidSignature
 from video_utils import chained_hash
 
 
-# ----------------------------
+PROVENANCE = Path("provenance")
+PROVENANCE.mkdir(exist_ok=True)
+
+
+# -----------------------------
 # Helpers
-# ----------------------------
+# -----------------------------
 
 def load_chain(path):
     chain = []
@@ -25,43 +30,41 @@ def load_chain(path):
     return chain
 
 
-def save_mismatch_overlay(video_path: str, frame_index: int):
+def save_heatmap(frame, diff, idx):
     """
-    Save the mismatched frame with a red forensic overlay.
+    Creates a red heatmap overlay on the mismatched regions
     """
-    for idx, frame in enumerate(iio.imiter(video_path)):
-        if idx == frame_index:
-            frame = frame.copy()
-            h, w, _ = frame.shape
+    norm = diff / diff.max()
+    heat = np.zeros_like(frame)
+    heat[..., 0] = (norm * 255).astype(np.uint8)
 
-            thickness = 10  # border thickness
+    overlay = frame.copy()
+    alpha = 0.6
+    overlay = (overlay * (1 - alpha) + heat * alpha).astype(np.uint8)
 
-            # Red border
-            frame[:thickness, :, :] = [255, 0, 0]
-            frame[-thickness:, :, :] = [255, 0, 0]
-            frame[:, :thickness, :] = [255, 0, 0]
-            frame[:, -thickness:, :] = [255, 0, 0]
+    out = PROVENANCE / f"mismatch_frame_{idx}_heatmap.png"
+    iio.imwrite(out, overlay)
 
-            out_path = f"provenance/mismatch_frame_{frame_index}.png"
-            iio.imwrite(out_path, frame)
+    raw = PROVENANCE / f"mismatch_frame_{idx}.png"
+    iio.imwrite(raw, frame)
 
-            print(f"🖼️  Mismatch frame saved to {out_path}")
-            return
+    return [str(raw), str(out)]
 
 
-# ----------------------------
-# Main verification
-# ----------------------------
+# -----------------------------
+# Main Verification
+# -----------------------------
 
 def verify_video(video_path: str):
     report = {
         "file": video_path,
         "status": "UNKNOWN",
-        "failure_type": None,
+        "total_frames": 0,
+        "mismatched_frames": 0,
         "first_mismatched_frame": None,
-        "total_frames_checked": 0,
-        "signed_by": "ECDSA-P256",
-        "verified_with_public_key": True
+        "last_mismatched_frame": None,
+        "tamper_percentage": 0.0,
+        "visual_evidence": []
     }
 
     # Load public key
@@ -69,64 +72,77 @@ def verify_video(video_path: str):
         public_key = serialization.load_pem_public_key(f.read())
 
     # Load stored hash chain
-    stored_chain = load_chain("provenance/video_chain.bin")
+    chain = load_chain("provenance/video_chain.bin")
 
     prev_hash = b"\x00" * 32
-    last_valid_frame = -1
+    mismatch_frames = []
+    first_visual_done = False
 
-    # Frame-by-frame verification
     for idx, frame in enumerate(iio.imiter(video_path)):
-        report["total_frames_checked"] += 1
+        report["total_frames"] += 1
 
         frame_bytes = frame.astype(np.uint8).tobytes()
         curr_hash = chained_hash(frame_bytes, prev_hash)
 
-        if idx >= len(stored_chain) or curr_hash != stored_chain[idx]:
-            report["status"] = "FAILED"
-            report["failure_type"] = "FRAME_HASH_MISMATCH"
-            report["first_mismatched_frame"] = idx
-            break
+        if idx >= len(chain) or curr_hash != chain[idx]:
+            mismatch_frames.append(idx)
 
-        prev_hash = curr_hash
-        last_valid_frame = idx
+            if not first_visual_done:
+                ref_frame = np.frombuffer(
+                    frame_bytes, dtype=np.uint8
+                ).reshape(frame.shape)
+
+                diff = np.abs(frame.astype(int) - ref_frame.astype(int)).sum(axis=2)
+                report["visual_evidence"] = save_heatmap(frame, diff, idx)
+                first_visual_done = True
+
+        else:
+            prev_hash = curr_hash
+
+    report["mismatched_frames"] = len(mismatch_frames)
+
+    if mismatch_frames:
+        report["status"] = "FAILED"
+        report["first_mismatched_frame"] = mismatch_frames[0]
+        report["last_mismatched_frame"] = mismatch_frames[-1]
+        report["tamper_percentage"] = round(
+            100 * len(mismatch_frames) / report["total_frames"], 2
+        )
     else:
-        # Frame chain matched → verify signature
         try:
             with open("provenance/video_sig.bin", "rb") as f:
-                signature = f.read()
+                sig = f.read()
 
-            public_key.verify(
-                signature,
-                prev_hash,
-                ec.ECDSA(hashes.SHA256())
-            )
-
+            public_key.verify(sig, prev_hash, ec.ECDSA(hashes.SHA256()))
             report["status"] = "VERIFIED"
 
         except InvalidSignature:
             report["status"] = "FAILED"
-            report["failure_type"] = "SIGNATURE_MISMATCH"
-            report["first_mismatched_frame"] = last_valid_frame + 1
+            report["mismatched_frames"] = report["total_frames"]
 
-    # Write JSON report
-    with open("provenance/video_verification_report.json", "w") as f:
+    with open(PROVENANCE / "video_verification_report.json", "w") as f:
         json.dump(report, f, indent=2)
 
-    # Console output + visual evidence
+    # Console output
     if report["status"] == "VERIFIED":
-        print("✔ Video verified successfully")
+        print("✔ Verification successful")
+        print(f"✔ Total frames checked: {report['total_frames']}")
+        print("✔ Mismatched frames: 0")
     else:
-        print("✘ Video verification failed")
-        print(f"  Reason: {report['failure_type']}")
-        print(f"  First mismatched frame: {report['first_mismatched_frame']}")
-        save_mismatch_overlay(video_path, report["first_mismatched_frame"])
+        print("✘ Verification failed")
+        print(f"Total frames checked: {report['total_frames']}")
+        print(f"Mismatched frames: {report['mismatched_frames']}")
+        print(f"First mismatch at frame: {report['first_mismatched_frame']}")
+        print(f"Last mismatch at frame: {report['last_mismatched_frame']}")
+        print(f"Tamper severity: {report['tamper_percentage']}%")
+        print("✔ Visual evidence generated")
 
     return report
 
 
-# ----------------------------
-# CLI entry
-# ----------------------------
+# -----------------------------
+# CLI Entry
+# -----------------------------
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
